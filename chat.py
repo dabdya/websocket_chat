@@ -1,9 +1,5 @@
 from aiohttp import web
 
-# 1. Нужно ли выводить сообщение о том, что лично ты зашел в чат
-# 2. Выводить историю публичных сообщений для новых пользователей
-# 3. Отслеживать выход из чата
-
 
 class WSChat:
     def __init__(self, host='0.0.0.0', port=8080):
@@ -15,8 +11,12 @@ class WSChat:
         return web.FileResponse('./index.html')
 
     async def chat(self, request):
-        ws = web.WebSocketResponse()
-        await ws.prepare(request)
+        ws = web.WebSocketResponse(autoclose=False)
+        try:
+            await ws.prepare(request)
+        except web.HTTPException:
+            # Отправлять ошибку HTTP
+            pass
 
         async for msg in ws:
             if msg.data == "ping":
@@ -27,9 +27,12 @@ class WSChat:
                 _id = data['id']
                 self.conns[_id] = ws
                 await self.user_enter(_id)
+                await self.db.messages()
             elif data['mtype'] == 'TEXT':
-                id_to = data['to'] if data['to'] else None
+                id_to = data['to'] if data['to'] and data['to'] in self.conns else None
                 await self.send_msg(data['id'], data['text'], id_to=id_to)
+
+        await self.user_exit(ws)
 
     async def send_msg(self, id_from, text, id_to=None):
         if id_to:
@@ -59,8 +62,23 @@ class WSChat:
             }
             await self.conns[conn].send_json(msg)
 
-    async def user_exit(self, _id):
-        pass
+    async def user_exit(self, exit_conn):
+        exit_id = self.get_id_by_conn(exit_conn)
+        for conn in self.conns:
+            if conn == exit_id:
+                continue
+            msg = {
+                'mtype': 'USER_LEAVE',
+                'id': exit_id
+            }
+            await self.conns[conn].send_json(msg)
+        await exit_conn.close()
+        del self.conns[exit_id]
+
+    def get_id_by_conn(self, conn):
+        for _conn in self.conns:
+            if self.conns[_conn] == conn:
+                return _conn
 
     def run(self):
         app = web.Application()
